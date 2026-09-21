@@ -9,10 +9,10 @@ jobs:
 
     steps:
       - name: Baixar codigo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Instalar Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -29,7 +29,7 @@ jobs:
           new = 'applicationId = "org.codeaurora.snapcam"'
 
           if old not in s:
-              raise SystemExit("ERRO: applicationId original nao encontrado")
+              raise SystemExit("ERRO: applicationId nao encontrado")
 
           s = s.replace(old, new, 1)
 
@@ -38,15 +38,16 @@ jobs:
           if old_suffix in s:
               s = s.replace(
                   old_suffix,
-                  '// applicationIdSuffix removido para usar org.codeaurora.snapcam',
+                  '// applicationIdSuffix removido para Snapcam',
                   1
               )
 
           p.write_text(s)
-          print("Package Snapcam aplicado com sucesso")
+
+          print("OK: pacote alterado para org.codeaurora.snapcam")
           PY
 
-      - name: Corrigir cameras fisicas Xiaomi Poco
+      - name: Aplicar correcao Poco F5 ultrawide
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -57,264 +58,175 @@ jobs:
 
           s = p.read_text()
 
-          def replace_once(old, new, nome):
+          def trocar(old, new, nome):
               global s
 
               if old not in s:
                   raise SystemExit(
-                      f"ERRO: trecho nao encontrado: {nome}"
+                      "ERRO: nao achei o trecho: " + nome
                   )
 
               s = s.replace(old, new, 1)
-              print(f"OK: {nome}")
+              print("OK:", nome)
 
-          # -------------------------------------------------
-          # 1. Adiciona variaveis para lembrar:
-          #    camera fisica escolhida
-          #    camera logica que sera aberta
-          # -------------------------------------------------
 
-          old = '''    private boolean pendingStartRecording = false;
-          '''
+          # =========================================================
+          # 1. Variavel que guarda qual sensor fisico queremos usar
+          # =========================================================
 
-          new = '''    private boolean pendingStartRecording = false;
+          trocar(
+              '    private boolean pendingStartRecording = false;',
+              '''    private boolean pendingStartRecording = false;
 
-              // Xiaomi / Poco physical-camera workaround
-              // A lente fisica e selecionada pelo usuario, mas abrimos a camera
-              // logica que contem essa lente.
-              private String forcedPhysicalCameraId = null;
-              private String forcedLogicalCameraId = null;
-          '''
-
-          replace_once(
-              old,
-              new,
-              "adicionar variaveis de camera fisica"
+              // POCO F5 PHYSICAL CAMERA PATCH
+              private String forcedPhysicalCameraId = null;''',
+              "variavel forcedPhysicalCameraId"
           )
 
-          # -------------------------------------------------
-          # 2. Toda vez que abrir camera, limpa estado antigo
-          # -------------------------------------------------
 
-          old = '''        String cameraToOpenId = null;
-                  try {
-          '''
+          # =========================================================
+          # 2. Limpa a camera fisica sempre que abrir uma nova camera
+          # =========================================================
 
-          new = '''        String cameraToOpenId = null;
+          trocar(
+              '        String cameraToOpenId = null;',
+              '''        String cameraToOpenId = null;
 
-                  // Limpa o roteamento anterior antes de escolher uma nova lente
-                  forcedPhysicalCameraId = null;
-                  forcedLogicalCameraId = null;
-
-                  try {
-          '''
-
-          replace_once(
-              old,
-              new,
-              "reset do roteamento fisico"
+                  // POCO F5 PHYSICAL CAMERA PATCH
+                  forcedPhysicalCameraId = null;''',
+              "reset camera fisica"
           )
 
-          # -------------------------------------------------
-          # 3. Quando usuario escolher uma camera fisica,
-          #    NAO tenta abrir ela diretamente.
+
+          # =========================================================
+          # 3. Quando o ID escolhido for uma camera fisica,
+          #    descobre a camera LOGICA que contem esse sensor.
           #
-          #    Descobre a camera logica que contem essa lente
-          #    e abre a logica.
-          # -------------------------------------------------
+          #    Em vez de:
+          #       openCamera(sensor fisico)
+          #
+          #    faremos:
+          #       openCamera(camera logica)
+          #       + setPhysicalCameraId(sensor fisico)
+          # =========================================================
 
-          old = '''                if (isValidAndAvailable) {
-                          cameraToOpenId = preferredBackId;
-                      } else {
-          '''
+          trocar(
+              '                    cameraToOpenId = preferredBackId;',
+              '''                    cameraToOpenId = preferredBackId;
 
-          new = '''                if (isValidAndAvailable) {
-                          cameraToOpenId = preferredBackId;
+                      // POCO F5 PHYSICAL CAMERA PATCH
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
 
-                          // Android 9+:
-                          // se o ID selecionado for uma camera fisica pertencente
-                          // a uma camera logica, abra a LOGICA e guarde a FISICA
-                          // para direcionar os frames depois.
-                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                          for (String logicalId : basicCameraIds) {
 
-                              String logicalParent =
-                                      findLogicalParentForPhysicalCamera(
-                                              preferredBackId,
-                                              basicCameraIds,
-                                              cameraManager
-                                      );
-
-                              if (logicalParent != null
-                                      && !logicalParent.equals(preferredBackId)) {
-
-                                  forcedPhysicalCameraId = preferredBackId;
-                                  forcedLogicalCameraId = logicalParent;
-
-                                  cameraToOpenId = logicalParent;
-
-                                  FLog.i(
-                                          TAG,
-                                          "POCO PHYSICAL CAMERA: selected physical="
-                                                  + forcedPhysicalCameraId
-                                                  + " | opening logical="
-                                                  + forcedLogicalCameraId
-                                  );
-                              }
-                          }
-
-                      } else {
-          '''
-
-          replace_once(
-              old,
-              new,
-              "abrir camera logica em vez da fisica"
-          )
-
-          # -------------------------------------------------
-          # 4. Na criacao da sessao Camera2,
-          #    manda cada Surface usar especificamente
-          #    a lente fisica selecionada.
-          # -------------------------------------------------
-
-          old = '''                for (android.view.Surface s : surfaces) {
-                          outputs.add(new android.hardware.camera2.params.OutputConfiguration(s));
-                      }
-          '''
-
-          new = '''                for (android.view.Surface s : surfaces) {
-
-                          android.hardware.camera2.params.OutputConfiguration output =
-                                  new android.hardware.camera2.params.OutputConfiguration(s);
-
-                          if (forcedPhysicalCameraId != null) {
                               try {
 
-                                  output.setPhysicalCameraId(
-                                          forcedPhysicalCameraId
-                                  );
+                                  CameraCharacteristics logicalChars =
+                                          cameraManager.getCameraCharacteristics(logicalId);
 
-                                  FLog.i(
+                                  Integer logicalFacing =
+                                          logicalChars.get(
+                                                  CameraCharacteristics.LENS_FACING
+                                          );
+
+                                  Set<String> physicalIds =
+                                          logicalChars.getPhysicalCameraIds();
+
+                                  if (
+                                          logicalFacing != null
+                                          && logicalFacing
+                                              == CameraCharacteristics.LENS_FACING_BACK
+                                          && physicalIds != null
+                                          && physicalIds.contains(preferredBackId)
+                                  ) {
+
+                                      forcedPhysicalCameraId = preferredBackId;
+
+                                      // IMPORTANTE:
+                                      // abre a camera logica e nao o sensor fisico
+                                      cameraToOpenId = logicalId;
+
+                                      FLog.i(
+                                              TAG,
+                                              "POCO WIDE PATCH: physical="
+                                                      + forcedPhysicalCameraId
+                                                      + " logical="
+                                                      + cameraToOpenId
+                                      );
+
+                                      break;
+                                  }
+
+                              } catch (Exception physicalLookupError) {
+
+                                  FLog.w(
                                           TAG,
-                                          "POCO PHYSICAL CAMERA: OutputConfiguration -> physical="
-                                                  + forcedPhysicalCameraId
-                                  );
-
-                              } catch (Exception physicalEx) {
-
-                                  FLog.e(
-                                          TAG,
-                                          "POCO PHYSICAL CAMERA: erro ao direcionar output para "
-                                                  + forcedPhysicalCameraId,
-                                          physicalEx
+                                          "POCO WIDE PATCH: erro verificando logicalId "
+                                                  + logicalId,
+                                          physicalLookupError
                                   );
                               }
                           }
-
-                          outputs.add(output);
-                      }
-          '''
-
-          replace_once(
-              old,
-              new,
-              "OutputConfiguration com physicalCameraId"
+                      }''',
+              "roteamento fisica para logica"
           )
 
-          # -------------------------------------------------
-          # 5. Adiciona funcao que procura qual camera logica
-          #    possui a camera fisica selecionada.
-          # -------------------------------------------------
 
-          marker = '''    @RequiresApi(api = Build.VERSION_CODES.P)
-              private boolean isPhysicalBackCamera'''
+          # =========================================================
+          # 4. Faz a Surface da sessao usar especificamente
+          #    o sensor fisico escolhido.
+          # =========================================================
 
-          helper = '''    @RequiresApi(api = Build.VERSION_CODES.P)
-              @Nullable
-              private String findLogicalParentForPhysicalCamera(
-                      String physicalCameraId,
-                      String[] basicCameraIds,
-                      CameraManager cameraManager) {
+          trocar(
+              '                    outputs.add(new android.hardware.camera2.params.OutputConfiguration(s));',
+              '''                    android.hardware.camera2.params.OutputConfiguration output =
+                              new android.hardware.camera2.params.OutputConfiguration(s);
 
-                  if (physicalCameraId == null
-                          || basicCameraIds == null
-                          || cameraManager == null) {
-                      return null;
-                  }
+                      if (forcedPhysicalCameraId != null) {
 
-                  try {
+                          try {
 
-                      for (String logicalId : basicCameraIds) {
-
-                          CameraCharacteristics logicalChars =
-                                  cameraManager.getCameraCharacteristics(
-                                          logicalId
-                                  );
-
-                          Integer facing = logicalChars.get(
-                                  CameraCharacteristics.LENS_FACING
-                          );
-
-                          if (facing == null
-                                  || facing != CameraCharacteristics.LENS_FACING_BACK) {
-                              continue;
-                          }
-
-                          Set<String> physicalIds =
-                                  logicalChars.getPhysicalCameraIds();
-
-                          if (physicalIds != null
-                                  && physicalIds.contains(physicalCameraId)) {
+                              output.setPhysicalCameraId(
+                                      forcedPhysicalCameraId
+                              );
 
                               FLog.i(
                                       TAG,
-                                      "POCO PHYSICAL CAMERA: "
-                                              + physicalCameraId
-                                              + " pertence a camera logica "
-                                              + logicalId
+                                      "POCO WIDE PATCH: output usando physicalId="
+                                              + forcedPhysicalCameraId
                               );
 
-                              return logicalId;
+                          } catch (Exception physicalOutputError) {
+
+                              FLog.e(
+                                      TAG,
+                                      "POCO WIDE PATCH: falha no setPhysicalCameraId",
+                                      physicalOutputError
+                              );
                           }
                       }
 
-                  } catch (CameraAccessException e) {
-
-                      FLog.e(
-                              TAG,
-                              "POCO PHYSICAL CAMERA: erro procurando camera logica",
-                              e
-                      );
-                  }
-
-                  return null;
-              }
-
-              @RequiresApi(api = Build.VERSION_CODES.P)
-              private boolean isPhysicalBackCamera'''
-
-          replace_once(
-              marker,
-              helper,
-              "funcao para encontrar camera logica"
+                      outputs.add(output);''',
+              "OutputConfiguration physical camera"
           )
+
 
           p.write_text(s)
 
           print("")
-          print("==========================================")
-          print("PATCH POCO F5 APLICADO COM SUCESSO")
-          print("==========================================")
+          print("==============================================")
+          print("PATCH POCO F5 ULTRAWIDE APLICADO COM SUCESSO")
+          print("==============================================")
           PY
 
-      - name: Verificar patch
+      - name: Conferir alteracoes
         run: |
-          echo "=== PACKAGE ==="
-          grep -n "applicationId =" app/build.gradle.kts | head
+          echo "===== PACKAGE ====="
+          grep -n "applicationId =" app/build.gradle.kts | head -5
 
           echo ""
-          echo "=== PHYSICAL CAMERA PATCH ==="
-          grep -n "POCO PHYSICAL CAMERA" \
+          echo "===== PATCH ====="
+          grep -n "POCO WIDE PATCH" \
             app/src/main/java/com/fadcam/services/RecordingService.java
 
       - name: Baixar Media3 modificado do FadCam
@@ -333,5 +245,5 @@ jobs:
       - name: Enviar APK
         uses: actions/upload-artifact@v4
         with:
-          name: FadCam-Snapcam-PhysicalWide
+          name: FadCam-Snapcam-PocoF5-Ultrawide
           path: app/build/outputs/apk/**/*.apk
