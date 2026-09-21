@@ -1,0 +1,57 @@
+name: Build FadCam Snapcam
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Instalar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Transformar FadCam em Snapcam
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app/build.gradle.kts")
+          s = p.read_text()
+
+          s = s.replace(
+              'applicationId = "com.fadcam"',
+              'applicationId = "org.codeaurora.snapcam"',
+              1
+          )
+
+          s = s.replace(
+              'applicationIdSuffix = ".beta"',
+              '// applicationIdSuffix removido para usar org.codeaurora.snapcam',
+              1
+          )
+
+          p.write_text(s)
+          PY
+
+      - name: Baixar Media3 modificado do FadCam
+        run: |
+          git clone --depth 1 https://github.com/anonfaded/media3-patched.git /tmp/media3-patched
+
+      - name: Dar permissao ao Gradle
+        run: chmod +x gradlew
+
+      - name: Compilar APK
+        run: ./gradlew assembleDefaultDebug
+
+      - name: Enviar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FadCam-Snapcam
+          path: app/build/outputs/apk/**/*.apk
